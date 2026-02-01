@@ -1,71 +1,262 @@
-import { Router } from "express";
-import * as userController from "../controllers/user.controller.js";
-import { authenticate } from "../middleware/auth.js";
-import { validate } from "../middleware/validate.js";
-import {
-  updateProfileSchema,
-  updatePreferencesSchema,
-  updateEmailSchema,
-} from "../validators/schemas.js";
+import { Hono } from "hono";
+import { z } from "zod";
+import { eq } from "drizzle-orm";
+import { db } from "../db";
+import { user } from "../db/schema";
+import { requireAuth, type AuthVariables } from "../lib/middleware";
+import { auth } from "../lib/auth";
 
-const router = Router();
+const userRoutes = new Hono<{ Variables: AuthVariables }>();
 
-// ============ Public Routes ============
+// Validation schemas
+const updateUserSchema = z.object({
+    name: z.string().min(1).max(100).optional(),
+    avatar: z.string().url().optional().nullable(),
+});
 
-/**
- * @route   GET /api/users/check-email
- * @desc    Check if email is available
- * @access  Public
- */
-router.get("/check-email", userController.checkEmail);
-
-// ============ Protected Routes ============
+const updatePasswordSchema = z.object({
+    currentPassword: z.string().min(1),
+    newPassword: z.string().min(8).max(128),
+});
 
 /**
- * @route   GET /api/users/me
- * @desc    Get current user profile
- * @access  Private
+ * GET /user/me
+ * Get current user profile
  */
-router.get("/me", authenticate, userController.getMe);
+userRoutes.get("/me", requireAuth, async (c) => {
+    const currentUser = c.get("user");
+
+    if (!currentUser) {
+        return c.json({ success: false, error: "User not found" }, 404);
+    }
+
+    return c.json({
+        success: true,
+        data: {
+            id: currentUser.id,
+            name: currentUser.name,
+            email: currentUser.email,
+            avatar: currentUser.image,
+            emailVerified: currentUser.emailVerified,
+            createdAt: currentUser.createdAt,
+            updatedAt: currentUser.updatedAt,
+        },
+    });
+});
 
 /**
- * @route   PATCH /api/users/me
- * @desc    Update current user profile
- * @access  Private
+ * PATCH /user/me
+ * Update current user profile (name, avatar)
  */
-router.patch("/me", authenticate, validate(updateProfileSchema), userController.updateMe);
+userRoutes.patch("/me", requireAuth, async (c) => {
+    const currentUser = c.get("user");
+
+    if (!currentUser) {
+        return c.json({ success: false, error: "User not found" }, 404);
+    }
+
+    try {
+        const body = await c.req.json();
+        const parsed = updateUserSchema.safeParse(body);
+
+        if (!parsed.success) {
+            return c.json(
+                {
+                    success: false,
+                    error: "Validation failed",
+                    details: parsed.error.flatten(),
+                },
+                400
+            );
+        }
+
+        const { name, avatar } = parsed.data;
+
+        // Build update object
+        const updateData: { name?: string; image?: string | null; updatedAt: Date } =
+        {
+            updatedAt: new Date(),
+        };
+
+        if (name !== undefined) {
+            updateData.name = name;
+        }
+        if (avatar !== undefined) {
+            updateData.image = avatar;
+        }
+
+        // Update user in database
+        const [updatedUser] = await db
+            .update(user)
+            .set(updateData)
+            .where(eq(user.id, currentUser.id))
+            .returning();
+
+        return c.json({
+            success: true,
+            message: "Profile updated successfully",
+            data: {
+                id: updatedUser.id,
+                name: updatedUser.name,
+                email: updatedUser.email,
+                avatar: updatedUser.image,
+                emailVerified: updatedUser.emailVerified,
+                createdAt: updatedUser.createdAt,
+                updatedAt: updatedUser.updatedAt,
+            },
+        });
+    } catch (error: unknown) {
+        const errorMessage =
+            error instanceof Error ? error.message : "Invalid request body";
+        return c.json(
+            {
+                success: false,
+                error: "Bad request",
+                message: errorMessage,
+            },
+            400
+        );
+    }
+});
 
 /**
- * @route   PATCH /api/users/me/preferences
- * @desc    Update user preferences
- * @access  Private
+ * POST /user/change-password
+ * Change user password (for email/password users)
  */
-router.patch(
-  "/me/preferences",
-  authenticate,
-  validate(updatePreferencesSchema),
-  userController.updatePreferences
-);
+userRoutes.post("/change-password", requireAuth, async (c) => {
+    try {
+        const body = await c.req.json();
+        const parsed = updatePasswordSchema.safeParse(body);
+
+        if (!parsed.success) {
+            return c.json(
+                {
+                    success: false,
+                    error: "Validation failed",
+                    details: parsed.error.flatten(),
+                },
+                400
+            );
+        }
+
+        const { currentPassword, newPassword } = parsed.data;
+
+        await auth.api.changePassword({
+            headers: c.req.raw.headers,
+            body: {
+                currentPassword,
+                newPassword,
+                revokeOtherSessions: true,
+            },
+        });
+
+        return c.json({
+            success: true,
+            message: "Password changed successfully. Other sessions have been revoked.",
+        });
+    } catch (error: unknown) {
+        const errorMessage =
+            error instanceof Error
+                ? error.message
+                : "Invalid current password or operation failed";
+        return c.json(
+            {
+                success: false,
+                error: "Password change failed",
+                message: errorMessage,
+            },
+            400
+        );
+    }
+});
 
 /**
- * @route   PATCH /api/users/me/email
- * @desc    Update user email
- * @access  Private
+ * DELETE /user/me
+ * Delete current user account
  */
-router.patch("/me/email", authenticate, validate(updateEmailSchema), userController.updateEmail);
+userRoutes.delete("/me", requireAuth, async (c) => {
+    const currentUser = c.get("user");
+
+    if (!currentUser) {
+        return c.json({ success: false, error: "User not found" }, 404);
+    }
+
+    try {
+        // Delete user from database (cascades to sessions and accounts)
+        await db.delete(user).where(eq(user.id, currentUser.id));
+
+        return c.json({
+            success: true,
+            message: "Account deleted successfully",
+        });
+    } catch (error: unknown) {
+        const errorMessage =
+            error instanceof Error ? error.message : "Failed to delete account";
+        return c.json(
+            {
+                success: false,
+                error: "Account deletion failed",
+                message: errorMessage,
+            },
+            500
+        );
+    }
+});
 
 /**
- * @route   DELETE /api/users/me
- * @desc    Delete user account (soft delete)
- * @access  Private
+ * GET /user/sessions
+ * List all active sessions for current user
  */
-router.delete("/me", authenticate, userController.deleteMe);
+userRoutes.get("/sessions", requireAuth, async (c) => {
+    try {
+        const sessions = await auth.api.listSessions({
+            headers: c.req.raw.headers,
+        });
+
+        return c.json({
+            success: true,
+            data: sessions,
+        });
+    } catch (error: unknown) {
+        const errorMessage =
+            error instanceof Error ? error.message : "Failed to list sessions";
+        return c.json(
+            {
+                success: false,
+                error: "Failed to list sessions",
+                message: errorMessage,
+            },
+            500
+        );
+    }
+});
 
 /**
- * @route   GET /api/users/me/stats
- * @desc    Get user statistics
- * @access  Private
+ * POST /user/revoke-sessions
+ * Revoke all other sessions (logout from other devices)
  */
-router.get("/me/stats", authenticate, userController.getStats);
+userRoutes.post("/revoke-sessions", requireAuth, async (c) => {
+    try {
+        await auth.api.revokeOtherSessions({
+            headers: c.req.raw.headers,
+        });
 
-export default router;
+        return c.json({
+            success: true,
+            message: "All other sessions have been revoked",
+        });
+    } catch (error: unknown) {
+        const errorMessage =
+            error instanceof Error ? error.message : "Failed to revoke sessions";
+        return c.json(
+            {
+                success: false,
+                error: "Failed to revoke sessions",
+                message: errorMessage,
+            },
+            500
+        );
+    }
+});
+
+export { userRoutes };

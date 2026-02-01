@@ -1,53 +1,31 @@
 {
   "name": "fold-backend",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "type": "module",
   "scripts": {
-    "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/hyperingenious/fold-backend.git"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "type": "module",
-  "bugs": {
-    "url": "https://github.com/hyperingenious/fold-backend/issues"
-  },
-  "homepage": "https://github.com/hyperingenious/fold-backend#readme",
-  "devDependencies": {
-    "@types/node": "^25.0.10",
-    "nodemon": "^3.1.11",
-    "prisma": "^7.3.0",
-    "tsx": "^4.21.0",
-    "typescript": "^5.9.3"
+    "start": "node dist/index.js",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "@prisma/adapter-pg": "^7.3.0",
-    "@prisma/client": "^7.3.0",
-    "@types/bcryptjs": "^2.4.6",
-    "@types/cookie-parser": "^1.4.10",
-    "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
-    "@types/jsonwebtoken": "^9.0.10",
-    "@types/pg": "^8.16.0",
-    "@types/uuid": "^10.0.0",
-    "bcryptjs": "^3.0.3",
-    "cookie-parser": "^1.4.7",
-    "cors": "^2.8.6",
+    "@hono/node-server": "^1.19.9",
+    "@hono/swagger-ui": "^0.5.3",
+    "@hono/zod-validator": "^0.7.6",
+    "@neondatabase/serverless": "^1.0.2",
+    "better-auth": "^1.4.18",
     "dotenv": "^17.2.3",
-    "express": "^5.2.1",
-    "express-validator": "^7.3.1",
-    "helmet": "^8.1.0",
-    "jsonwebtoken": "^9.0.3",
-    "pg": "^8.17.2",
-    "uuid": "^13.0.0",
+    "drizzle-orm": "^0.45.1",
+    "hono": "^4.11.7",
+    "node-appwrite": "^21.1.0",
     "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.30",
+    "drizzle-kit": "^0.31.8",
+    "tsx": "^4.7.1",
+    "typescript": "^5.8.3"
   }
 }
