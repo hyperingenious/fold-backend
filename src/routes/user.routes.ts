@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "../db";
-import { user } from "../db/schema";
+import { user, userSettings } from "../db/schema";
 import { requireAuth, type AuthVariables } from "../lib/middleware";
 import { auth } from "../lib/auth";
 
@@ -260,3 +260,88 @@ userRoutes.post("/revoke-sessions", requireAuth, async (c) => {
 });
 
 export { userRoutes };
+
+// =============================================================================
+// User Settings routes — appended to userRoutes
+// =============================================================================
+
+const updateSettingsSchema = z.object({
+    autoLocation: z.boolean().optional(),
+    screenshotProtection: z.boolean().optional(),
+});
+
+/**
+ * GET /user/settings
+ * Get current user's app settings
+ */
+userRoutes.get("/settings", requireAuth, async (c) => {
+    const currentUser = c.get("user");
+    if (!currentUser) return c.json({ success: false, error: "User not found" }, 404);
+
+    // Upsert: ensure a row exists, return it
+    const existing = await db
+        .select()
+        .from(userSettings)
+        .where(eq(userSettings.userId, currentUser.id))
+        .limit(1);
+
+    if (existing.length > 0) {
+        return c.json({
+            success: true,
+            data: { autoLocation: existing[0].autoLocation, screenshotProtection: existing[0].screenshotProtection },
+        });
+    }
+
+    // Create defaults on first fetch
+    const [created] = await db
+        .insert(userSettings)
+        .values({ userId: currentUser.id })
+        .returning();
+
+    return c.json({
+        success: true,
+        data: { autoLocation: created.autoLocation, screenshotProtection: created.screenshotProtection },
+    });
+});
+
+/**
+ * PATCH /user/settings
+ * Update current user's app settings
+ */
+userRoutes.patch("/settings", requireAuth, async (c) => {
+    const currentUser = c.get("user");
+    if (!currentUser) return c.json({ success: false, error: "User not found" }, 404);
+
+    try {
+        const body = await c.req.json();
+        const parsed = updateSettingsSchema.safeParse(body);
+        if (!parsed.success) {
+            return c.json({ success: false, error: "Validation failed", details: parsed.error.flatten() }, 400);
+        }
+
+        // Upsert
+        const existing = await db
+            .select()
+            .from(userSettings)
+            .where(eq(userSettings.userId, currentUser.id))
+            .limit(1);
+
+        if (existing.length > 0) {
+            const [updated] = await db
+                .update(userSettings)
+                .set({ ...parsed.data, updatedAt: new Date() })
+                .where(eq(userSettings.userId, currentUser.id))
+                .returning();
+            return c.json({ success: true, data: { autoLocation: updated.autoLocation, screenshotProtection: updated.screenshotProtection } });
+        } else {
+            const [created] = await db
+                .insert(userSettings)
+                .values({ userId: currentUser.id, ...parsed.data })
+                .returning();
+            return c.json({ success: true, data: { autoLocation: created.autoLocation, screenshotProtection: created.screenshotProtection } });
+        }
+    } catch (error: unknown) {
+        const msg = error instanceof Error ? error.message : "Failed to update settings";
+        return c.json({ success: false, error: msg }, 400);
+    }
+});

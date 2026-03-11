@@ -1,4 +1,7 @@
+import { and, eq, gt } from "drizzle-orm";
 import type { Context, Next } from "hono";
+import { db } from "../db";
+import { session as sessionTable, user as userTable } from "../db/schema";
 import { auth } from "./auth";
 
 // Session/User types inferred from Better-Auth
@@ -16,17 +19,58 @@ export type AuthVariables = {
  * This makes user/session available in all routes via c.get("user") and c.get("session")
  */
 export async function authMiddleware(c: Context, next: Next) {
-    const session = await auth.api.getSession({ headers: c.req.raw.headers });
+    const authHeader = c.req.header("Authorization");
 
-    if (!session) {
-        c.set("user", null);
-        c.set("session", null);
+    // 1. Try standard Better Auth getSession
+    const sessionResult = await auth.api.getSession({
+        headers: c.req.raw.headers,
+    });
+
+    if (sessionResult) {
+        c.set("user", sessionResult.user);
+        c.set("session", sessionResult.session);
         await next();
         return;
     }
 
-    c.set("user", session.user);
-    c.set("session", session.session);
+    // 2. Fallback: Manual DB lookup for Bearer token
+    if (authHeader && authHeader.startsWith("Bearer ")) {
+        const token = authHeader.split(" ")[1];
+
+        // Find valid session
+        const [validSession] = await db
+            .select()
+            .from(sessionTable)
+            .where(
+                and(
+                    eq(sessionTable.token, token),
+                    gt(sessionTable.expiresAt, new Date())
+                )
+            )
+            .limit(1);
+
+        if (validSession) {
+            // Find user
+            const [user] = await db
+                .select()
+                .from(userTable)
+                .where(eq(userTable.id, validSession.userId))
+                .limit(1);
+
+            if (user) {
+                // Determine if we need to mock "twoFactorEnabled" if schema differs in types (usually boolean)
+                // Better-auth types might be strict, so we cast if needed or just pass the user object
+                c.set("user", user as any);
+                c.set("session", validSession as any);
+                await next();
+                return;
+            }
+        }
+    }
+
+    // 3. No session found
+    c.set("user", null);
+    c.set("session", null);
     await next();
 }
 
